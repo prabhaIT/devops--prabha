@@ -1,0 +1,97 @@
+from flask import Flask, request, jsonify
+import pymysql
+import boto3
+import json
+import os
+
+app = Flask(__name__)
+
+# ---------- Fetch RDS Credentials from AWS Secrets Manager ----------
+def get_db_credentials():
+    secret_name = os.getenv("SECRET_NAME", "your-secret-name")  # e.g. my-rds-secret
+    region_name = os.getenv("AWS_REGION", "ap-south-1")
+
+    client = boto3.client('secretsmanager', region_name=region_name)
+    get_secret_value_response = client.get_secret_value(SecretId=secret_name)
+    secret = json.loads(get_secret_value_response['SecretString'])
+    return secret
+
+# ---------- Connect to RDS MySQL ----------
+def get_db_connection():
+    secret = get_db_credentials()
+    conn = pymysql.connect(
+        host=secret["host"],
+        user=secret["username"],
+        password=secret["password"],
+        database=secret["dbname"],
+        cursorclass=pymysql.cursors.DictCursor
+    )
+    return conn
+
+# ---------- Create (POST) ----------
+@app.route('/users', methods=['POST'])
+def add_user():
+    data = request.get_json()
+    name = data.get('name')
+    email = data.get('email')
+
+    if not name or not email:
+        return jsonify({"error": "Missing name or email"}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO users (name, email) VALUES (%s, %s)", (name, email))
+    conn.commit()
+    conn.close()
+    return jsonify({"message": "User added successfully"}), 201
+
+# ---------- Read (GET) ----------
+@app.route('/users', methods=['GET'])
+def get_users():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users")
+    users = cursor.fetchall()
+    conn.close()
+    return jsonify(users)
+
+# ---------- Read by ID (GET /users/<id>) ----------
+@app.route('/users/<int:id>', methods=['GET'])
+def get_user(id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE id = %s", (id,))
+    user = cursor.fetchone()
+    conn.close()
+    if user:
+        return jsonify(user)
+    else:
+        return jsonify({"error": "User not found"}), 404
+
+# ---------- Update (PUT) ----------
+@app.route('/users/<int:id>', methods=['PUT'])
+def update_user(id):
+    data = request.get_json()
+    name = data.get('name')
+    email = data.get('email')
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET name=%s, email=%s WHERE id=%s", (name, email, id))
+    conn.commit()
+    conn.close()
+    return jsonify({"message": "User updated successfully"})
+
+# ---------- Delete (DELETE) ----------
+@app.route('/users/<int:id>', methods=['DELETE'])
+def delete_user(id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM users WHERE id=%s", (id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"message": "User deleted successfully"})
+
+# ---------- Main Entry ----------
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
